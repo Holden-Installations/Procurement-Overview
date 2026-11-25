@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/monday-sdk-js@0.5.5/dist/main.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap');
+  :root {
+    --color-bg: #f6f7fb;
+    --color-text: #323338;
+    --color-divider: #e6e9ef;
+    --color-neutral-100: #f4f5f7;
+    --color-neutral-200: #e9ebef;
+    --color-neutral-400: #c4c8d1;
+    --color-neutral-500: #a8b3bd;
+    --color-neutral-600: #8b909c;
+    --color-neutral-700: #6b7280;
+    --color-neutral-800: #4a4f59;
+    --color-neutral-900: #2b2e35;
+    --color-accent: #0073ea;
+    --color-accent-100: #e6f1fd;
+    --color-accent-400: #4f9ef2;
+    --color-accent-700: #0060c2;
+    --color-accent-900: #003d80;
+    --font-heading: Figtree, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-body: Figtree, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+    --shadow-md: 0 6px 20px rgba(0,0,0,0.18);
+    --radius: 8px;
+    --card-bg: #ffffff;
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.05), 0 4px 12px rgba(0,0,0,0.04);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); }
+  a { color: var(--color-accent-700); text-decoration: none; }
+  input, select, button { font-family: var(--font-body); }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+  .blueprint { position: relative; border: 1px solid var(--color-divider); border-radius: var(--radius); background: var(--card-bg); box-shadow: var(--shadow-card); }
+  .corner { display: none; }
+  .corner.tl { top: -1px; left: -1px; border-right: none; border-bottom: none; }
+  .corner.tr { top: -1px; right: -1px; border-left: none; border-bottom: none; }
+  .corner.bl { bottom: -1px; left: -1px; border-right: none; border-top: none; }
+  .corner.br { bottom: -1px; right: -1px; border-left: none; border-top: none; }
+
+  #tooltip {
+    position: fixed; z-index: 40; pointer-events: none; display: none;
+    max-width: 280px; background: #323338; color: #fff; border-radius: 6px;
+    padding: 8px 11px; box-shadow: var(--shadow-md);
+  }
+  #tooltip .tt-title { font-size: 12.5px; font-weight: 700; }
+  #tooltip .tt-body { font-size: 12.5px; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div id="tooltip"><div class="tt-title"></div><div class="tt-body"></div></div>
+<div id="root" style="min-height: 100vh; padding: 20px clamp(14px, 2vw, 32px) 64px; display: flex; flex-direction: column; gap: 20px;">Loading…</div>
+
+<script>
+var monday = mondaySdk();
+
+// ---------- column IDs ----------
+var COL_STATUS = "color_mm6hr2dz";
+var COL_SITE_INSTALL = "date_mm5bnvxb";
+var COL_ISSUE_RFQ_PLANNED = "date_mm6h864e";
+var COL_SUBMIT_ANALYSIS_PLANNED = "date_mm6hx93f";
+var COL_PO_REQUIRED_PLANNED = "date_mm6h5rsp";
+var COL_RFQ_SENT_ACTUAL = "date_mm5zwzgf";
+// Supplier Selection → "Date Quote Reqd" (planned), read from the same top-level package
+// item as the other planned dates.
+var COL_DATE_QUOTE_REQD_PLANNED = "date_mm6hfwrm";
+// Procurement board.
+var COL_PO_PLACED = "date_mm6hmyqq";
+var COL_PO_REQUIRED = "date_mm6j3c3d"; // Procurement — plain date, manually entered separately from the hidden formula column
+var COL_ORDER_REQUIRED = "date_mm6hyhyp";
+var COL_ORDER_PLACED = "date_mm6h4d6n";
+var COL_LEAD_TIME = "numeric_mm5arbyg"; // Procurement — needed for the PO-placed-but-still-late check
+var COL_CONFIRMED_DELIVERY = "date_mm6s3es3"; // plain date column on Procurement — was previously pointed at a stale/incorrect column id
+var COL_PROJECT = "board_relation_mm5ay7h7";    // Procurement — connect-board column to the Projects board
+// Procurement → Call-Offs. The only call-off-side column id we know for certain; every
+// column ON the Call-Offs board is resolved by title instead (see pick()), so a renamed
+// or re-created column id can't silently blank the tier out.
+var COL_CALL_OFFS = "board_relation_mm6tfvj0";
+var CALL_OFFS_BOARD_ID = 5100466561;
+// Procurement → Purchase Orders. The PO reference IS the linked item's Name (there is no
+// PO-number column); PO Status distinguishes a real Requested/Issued PO from a
+// Placeholder row, which must not read as an actual reference.
+var COL_PURCHASE_ORDERS = "board_relation_mm5gf4m3";
+var PURCHASE_ORDERS_BOARD_ID = 5100466534;
+
+var SUPPLIER_SELECTION_BOARD_ID = 5101746025;
+// Supplier Selection is Scope → Element → Supplier. The connect column lives on each
+// Element (one Element → one or more Procurement packages); the app reads the reverse
+// direction via the Procurement reflection column below.
+var COL_SS_TO_PROCUREMENT = "board_relation_mm5ze8xy";
+var COL_PROC_TO_ELEMENT = "board_relation_mm6hej5n"; // Procurement → exactly one Element
+// Procurement board id. Left null = resolved from the Board View's own context.
+var PROCUREMENT_BOARD_ID = null;
+var COL_SUPPLIER_STATUS = "color_mm6hhv2y"; // was color_mm5znjga — that column is stale, this is the real one
+var COL_SUPPLIER_QUOTE_RECEIVED = "date_mm5zw9dc";
+
+// ---------- status config ----------
+var S = {
+  mitigation: { key: 'mitigation', label: 'Mitigation Required', color: '#e2445c', block: '#e2445c', rank: 0 },
+  past:       { key: 'past',       label: 'Past Planned Date',   color: '#fdab3d', block: '#fdab3d', rank: 1 },
+  approach:   { key: 'approach',   label: 'Approaching Criticality', color: '#ff7575', block: '#ffa1a1', rank: 2 },
+  ontrack:    { key: 'ontrack',    label: 'On Track',            color: '#00c875', block: '#037f4c', rank: 3 },
+  none:       { key: 'none',       label: 'No Status',           color: '#a8b3bd', block: '#a8b3bd', rank: 4 }
+};
+var LABEL_TO_KEY = {};
+Object.keys(S).forEach(function (k) { LABEL_TO_KEY[S[k].label] = k; });
+var ORDER = ['mitigation', 'past', 'approach', 'ontrack', 'none'];
+
+var SEGC = { planned: '#00c875', buffer: '#fdab3d', done: '#5a5ce0' };
+var BEYOND = '#e2445c';
+
+// ---------- call-off status config (the only status shown in the call-off tier) ----------
+// Bar fills reuse the app's own bar tones — the same amber the Supplier Selection bar
+// uses for in-progress and the same muted green the on-track Procurement bar uses — so a
+// call-off bar reads identically to Bar 1 / Bar 2, only the hue changes. Keyed by the
+// exact status name, so a future status is a one-line addition.
+var STATUS_COLOR = {
+  'Submitted by Design':    { block: SEGC.buffer, badgeBg: '#fef4e6', badgeBorder: '#f2d3a0', badgeText: '#8a6100' },
+  'Approved by Commercial': { block: S.ontrack.block, badgeBg: '#e8f6ee', badgeBorder: '#b4e0c6', badgeText: '#037f4c' }
+};
+// Genuinely unset — drawn dashed and unfilled so an empty field can't be mistaken for a
+// gray "no data" bar.
+var STATUS_UNSET = { block: 'var(--color-neutral-100)', dashed: true, empty: true, badgeBg: 'var(--color-neutral-100)', badgeBorder: 'var(--color-neutral-400)', badgeText: 'var(--color-neutral-700)' };
+var STATUS_BY_NORM = {};
+Object.keys(STATUS_COLOR).forEach(function (k) { STATUS_BY_NORM[normTitle(k)] = STATUS_COLOR[k]; });
+function callOffStatusCfg(label) { return STATUS_BY_NORM[normTitle(label)] || STATUS_UNSET; }
+var PENDING_STATUS = 'Submitted by Design';
+// The card's existing muted badge treatment (as used for "Awaiting 2 of 2") — hairline
+// border, small text — washed with a hint of the status's own hue instead of flat gray.
+function mutedBadge(cfg) {
+  return 'font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 3px; white-space: nowrap; color: ' + cfg.badgeText +
+    '; background: ' + cfg.badgeBg + '; border: 1px ' + (cfg.dashed ? 'dashed' : 'solid') + ' ' + cfg.badgeBorder + ';';
+}
+
+// ---------- column-by-title resolution ----------
+// The Call-Offs board's column ids aren't known to this app, so its columns are read by
+// title with a small list of accepted spellings. normTitle() strips case, spaces and
+// punctuation so "Call-off Status", "Call Off Status" and "call-offstatus" all match.
+function normTitle(s) { return (s == null ? '' : String(s)).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function pick(byTitle, candidates) {
+  for (var i = 0; i < candidates.length; i++) {
+    var c = byTitle[normTitle(candidates[i])];
+    if (c) return c;
+  }
+  return null;
+}
+function cvText(c) { return c ? (c.text || c.display_value || null) : null; }
+function num(v) {
+  if (v == null || v === '') return null;
+  var n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+  return isNaN(n) ? null : n;
+}
+function fmtNum(n) { return n == null ? '—' : (Math.round(n * 100) / 100).toLocaleString('en-GB'); }
+// Planned Issue ascending — the order the call-offs were raised in.
+function coSort(a, b) {
+  var ka = d(a.plannedIssue), kb = d(b.plannedIssue);
+  if (ka && kb && ka - kb !== 0) return ka - kb;
+  if (ka && !kb) return -1;
+  if (kb && !ka) return 1;
+  return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+}
+
+// ---------- date helpers ----------
+function d(s) {
+  if (!s) return null;
+  var dt = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + 'T00:00:00') : new Date(s);
+  return isNaN(dt.getTime()) ? null : dt; // an Invalid Date is truthy in JS — never let one leak out
+}
+function fmt(dt) { return dt ? dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' }) : '—'; }
+// toISOString() converts to UTC — since d() builds dates at local midnight, any
+// positive UTC offset (e.g. BST) shifts the serialized date back by one full day.
+// Use local getFullYear/getMonth/getDate instead, which never cross a UTC boundary.
+function toISODateLocal(dt) {
+  var y = dt.getFullYear();
+  var m = String(dt.getMonth() + 1).padStart(2, '0');
+  var day = String(dt.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
+
+var TODAY = new Date();
+TODAY.setHours(0, 0, 0, 0);
+
+// Status is no longer calculated in the app: n8n writes the live value to COL_STATUS on
+// each Procurement item, and loadData() maps that label through LABEL_TO_KEY.
+
+// ---------- app state ----------
+var DATA = [];
+var lastRefreshTime = 0;
+var MIN_REFRESH_INTERVAL_MS = 4000;
+// project: 'all' or an exact project name.
+// ssCollapsed: Supplier Selection (Bar 1) collapse, keyed by p.code — expanded by default.
+// coOpen: call-off tier expansion, keyed by package code — same persistence pattern as
+// `open` (supplier breakdown), so a filter change or re-render never collapses it.
+var state = { pkg: 'all', sort: 'severity', filter: null, project: 'all', pkgGroup: 'all', closed: {}, open: {}, coOpen: {}, ssCollapsed: {}, loading: true, error: null };
+var DEMO = false;
+
+function setState(patch) {
+  state = Object.assign({}, state, typeof patch === 'function' ? patch(state) : patch);
+  render();
+}
+
+function splitCodeName(fullName) {
+  var parts = fullName.split('|');
+  if (parts.length > 1) {
+    return { code: parts[0].trim(), name: parts.slice(1).join('|').trim() };
+  }
+  return { code: '', name: fullName };
+}
+
+// Feeds both the supplier breakdown table and the quote marker on the timeline, so the
+// "is the quote in yet" signal can never disagree with itself between the two.
+function aggregateQuotes(supplierRows) {
+  var rows = supplierRows || [];
+  var received = rows.map(function (s) { return s.quoteReceived ? d(s.quoteReceived) : null; }).filter(Boolean);
+  var latest = received.length ? new Date(Math.max.apply(null, received)) : null;
+  var allResponded = rows.length > 0 && received.length === rows.length;
+  var awaitingLabel = (rows.length && received.length < rows.length)
+    ? ('Awaiting ' + (rows.length - received.length) + ' of ' + rows.length) : null;
+  return { latest: latest, allResponded: allResponded, awaitingLabel: awaitingLabel };
+}
+
+// RFQ Sent — earliest date across all suppliers who've been contacted (unlike
+// quotes, this doesn't wait for everyone: the process genuinely starts the
+// moment the first supplier is sent an RFQ). Computed live from the same
+// per-supplier fetch already used for the breakdown table and aggregateQuotes,
+// so there's no separate top-level field left to drift out of sync.
+function aggregateRfqSent(supplierRows) {
+  var rows = supplierRows || [];
+  var sent = rows.map(function (s) { return s.rfqSent ? d(s.rfqSent) : null; }).filter(Boolean);
+  return sent.length ? new Date(Math.min.apply(null, sent)) : null;
+}
+
+// ---------- data loading ----------
+//
+// Procurement is the primary driver: every Procurement item is one card, always. Its
+// reflection column (COL_PROC_TO_ELEMENT) points at one Supplier Selection Element
+// (2nd level); that Element's subitems are its suppliers, and its parent is the Scope
+// that carries the planned dates. Two packages under the same Scope are two cards, each
+// showing that Scope's dates independently — never merged.
+var chunk = function (arr, n) {
+  var out = [];
+  for (var i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+};
+var apiOrThrow = async function (query, variables) {
+  var res = await monday.api(query, { variables: variables });
+  if (res.errors) throw new Error(res.errors.map(function (e) { return e.message; }).join('; '));
+  return res.data;
+};
+
+async function resolveProcurementBoardId() {
+  if (PROCUREMENT_BOARD_ID) return PROCUREMENT_BOARD_ID;
+  // Board View app: the board it's installed on IS the Procurement board.
+  var ctx = await monday.get('context');
+  var bid = ctx && ctx.data ? (ctx.data.boardId || (ctx.data.boardIds && ctx.data.boardIds[0])) : null;
+  if (!bid) throw new Error('Could not resolve the Procurement board id from the app context — set PROCUREMENT_BOARD_ID.');
+  return bid;
+}
+
+async function loadData() {
+  try {
+    var txt = function (cv, id) {
+      var c = cv[id];
+      if (!c) return null;
+      return c.text || c.display_value || null;
+    };
+
+    // ---------- 1. every Procurement item (classic board, no capabilities) ----------
+    // Unfiltered column_values: Quantity+unit, Call-Offs and Purchase Orders are resolved
+    // by title, so the query can't be narrowed to a known id list. The reflection column
+    // returns the linked Element AND that Element's parent (Scope) in the same pass.
+    var procBoardId = await resolveProcurementBoardId();
+    var procFields = 'id name group { id title } column_values { id text column { title } ... on BoardRelationValue { linked_item_ids linked_items { id parent_item { id } } } ... on MirrorValue { display_value } }';
+    var procItems = [];
+    var first = await apiOrThrow('query ($boardId: [ID!]) { boards(ids: $boardId) { items_page(limit: 500) { cursor items { ' + procFields + ' } } } }', { boardId: [procBoardId] });
+    var page = first.boards[0].items_page;
+    procItems = procItems.concat(page.items);
+    while (page.cursor) {
+      var nx = await apiOrThrow('query ($cursor: String!) { next_items_page(limit: 500, cursor: $cursor) { cursor items { ' + procFields + ' } } }', { cursor: page.cursor });
+      page = nx.next_items_page;
+      procItems = procItems.concat(page.items);
+    }
+
+    var procById = {};
+    var coById = {};
+    var poById = {};
+    var projectIdsToResolve = [];
+    procItems.forEach(function (it) {
+      var cv = {};
+      var byTitle = {};
+      it.column_values.forEach(function (c) {
+        cv[c.id] = c;
+        if (c.column && c.column.title) byTitle[normTitle(c.column.title)] = c;
+      });
+      var coCol = cv[COL_CALL_OFFS] || pick(byTitle, ['Call-Offs', 'Call Offs', 'Call-off Reference']);
+      var poCol = cv[COL_PURCHASE_ORDERS] || pick(byTitle, ['Purchase Orders', 'Purchase Order', 'PO ID']);
+
+      // A package can link to MORE THAN ONE Element (e.g. "Flashings" + "Panels"
+      // both linked to one package) — collect all of them, not just the first.
+      // Stale/legacy links straight to a top-level row (no parent_item) are skipped.
+      var rel = cv[COL_PROC_TO_ELEMENT];
+      var linked = (rel && rel.linked_items) ? rel.linked_items : [];
+      var els = [];
+      for (var i = 0; i < linked.length; i++) {
+        if (linked[i] && linked[i].parent_item) els.push(linked[i]);
+      }
+      // Bar 1's dates still anchor to ONE Scope — use the first linked Element's parent.
+      // If a package's Elements ever span more than one Scope, only this first one's
+      // dates are used; worth flagging if that turns out to matter in practice.
+      var primaryEl = els.length ? els[0] : null;
+
+      procById[it.id] = {
+        id: it.id, name: it.name, cv: cv, byTitle: byTitle,
+        groupId: it.group ? it.group.id : null,
+        elementIds: els.map(function (e) { return String(e.id); }),
+        scopeId: primaryEl ? String(primaryEl.parent_item.id) : null,
+        callOffIds: (coCol && coCol.linked_item_ids) ? coCol.linked_item_ids.slice() : [],
+        poIds: (poCol && poCol.linked_item_ids) ? poCol.linked_item_ids.slice() : []
+      };
+      // Connect-board columns usually populate a comma-separated display text already;
+      // only fall back to a linked-item name lookup when text comes back empty.
+      var pc = cv[COL_PROJECT];
+      if (pc && !pc.text && !pc.display_value && pc.linked_item_ids) {
+        pc.linked_item_ids.forEach(function (pid) {
+          if (projectIdsToResolve.indexOf(pid) === -1) projectIdsToResolve.push(pid);
+        });
+      }
+    });
+
+    if (projectIdsToResolve.length) {
+      var projRes = await monday.api('query ($itemId: [ID!]) { items(ids: $itemId) { id name } }', { variables: { itemId: projectIdsToResolve } });
+      if (!projRes.errors) {
+        var projNames = {};
+        projRes.data.items.forEach(function (pi) { projNames[pi.id] = pi.name; });
+        Object.keys(procById).forEach(function (k) {
+          var pc = procById[k].cv[COL_PROJECT];
+          if (pc && !pc.text && !pc.display_value && pc.linked_item_ids) {
+            pc._resolvedText = pc.linked_item_ids.map(function (pid) { return projNames[pid]; }).filter(Boolean).join(', ') || null;
+          }
+        });
+      }
+    }
+
+    // ---------- 1b. one batched fetch of every linked call-off ----------
+    var allCoIds = [];
+    Object.keys(procById).forEach(function (k) {
+      procById[k].callOffIds.forEach(function (id) {
+        if (allCoIds.indexOf(id) === -1) allCoIds.push(id);
+      });
+    });
+    if (allCoIds.length) {
+      var coQuery = 'query ($itemId: [ID!]) { items(ids: $itemId) { id name column_values { id text column { title } ... on MirrorValue { display_value } } } }';
+      var coRes = await monday.api(coQuery, { variables: { itemId: allCoIds } });
+      if (!coRes.errors) {
+        coRes.data.items.forEach(function (it) {
+          var bt = {};
+          it.column_values.forEach(function (c) { if (c.column && c.column.title) bt[normTitle(c.column.title)] = c; });
+          coById[it.id] = {
+            id: it.id,
+            name: it.name,
+            qtyCalledOff: num(cvText(pick(bt, ['Qty Called Off', 'Quantity Called Off']))),
+            qtyReceived: num(cvText(pick(bt, ['Qty Received (rollup)', 'Qty Received', 'Quantity Received']))),
+            callOffStatus: cvText(pick(bt, ['Call-off Status', 'Call Off Status'])),
+            plannedIssue: cvText(pick(bt, ['Planned Issue'])),
+            actualIssue: cvText(pick(bt, ['Actual Issue', 'Date Issued']))
+          };
+        });
+      }
+    }
+
+    // ---------- 1c. linked Purchase Orders (name = the PO reference) ----------
+    var allPoIds = [];
+    Object.keys(procById).forEach(function (k) {
+      procById[k].poIds.forEach(function (id) {
+        if (allPoIds.indexOf(id) === -1) allPoIds.push(id);
+      });
+    });
+    if (allPoIds.length) {
+      var poQuery = 'query ($itemId: [ID!]) { items(ids: $itemId) { id name column_values { id text column { title } ... on MirrorValue { display_value } } } }';
+      var poRes = await monday.api(poQuery, { variables: { itemId: allPoIds } });
+      if (!poRes.errors) {
+        poRes.data.items.forEach(function (it) {
+          var bt = {};
+          it.column_values.forEach(function (c) { if (c.column && c.column.title) bt[normTitle(c.column.title)] = c; });
+          var st = cvText(pick(bt, ['PO Status', 'Status']));
+          poById[it.id] = {
+            id: it.id, name: it.name, status: st,
+            placeholder: normTitle(st).indexOf('placeholder') > -1
+          };
+        });
+      }
+    }
+
+    // ---------- 2. each distinct Element's own supplier subitems ----------
+    // Element sits directly above the leaf level, so its subitems ARE its suppliers —
+    // no descendant walk. capabilities: [CALCULATED] is required on the multi-level board.
+    var elementIds = [];
+    var scopeIds = [];
+    Object.keys(procById).forEach(function (k) {
+      var pr = procById[k];
+      (pr.elementIds || []).forEach(function (eid) {
+        if (elementIds.indexOf(eid) === -1) elementIds.push(eid);
+      });
+      if (pr.scopeId && scopeIds.indexOf(pr.scopeId) === -1) scopeIds.push(pr.scopeId);
+    });
+
+    // BatteryValue's battery_value entries carry a numeric label KEY (e.g. "3"), not the
+    // label text itself — resolve those keys through the column's own settings_str,
+    // same as monday's Status/Color column labels have always worked.
+    var STATUS_LABELS = {};
+    try {
+      var labelsRes = await apiOrThrow(
+        'query ($boardId: [ID!]) { boards(ids: $boardId) { columns(ids: ["' + COL_SUPPLIER_STATUS + '"]) { settings_str } } }',
+        { boardId: [SUPPLIER_SELECTION_BOARD_ID] }
+      );
+      var settingsStr = labelsRes.boards && labelsRes.boards[0] && labelsRes.boards[0].columns[0] && labelsRes.boards[0].columns[0].settings_str;
+      if (settingsStr) {
+        var parsed = JSON.parse(settingsStr);
+        STATUS_LABELS = (parsed && parsed.labels) || {};
+      }
+    } catch (e) {
+      console.warn('Could not resolve Status column labels — battery_value status will show blank instead of crashing.', e);
+    }
+    var batteryLabel = function (cv, id) {
+      var c = cv[id];
+      var bv = c && c.battery_value;
+      if (!bv || !bv.length) return null;
+      // Leaf (Supplier) item with a static value has exactly one entry.
+      var key = String(bv[0].key);
+      return STATUS_LABELS[key] || null;
+    };
+
+    var elementById = {};
+    var suppCols = [COL_SUPPLIER_STATUS, COL_RFQ_SENT_ACTUAL, COL_SUPPLIER_QUOTE_RECEIVED];
+    // COL_SUPPLIER_STATUS has rollup enabled on this multi-level board, which means it
+    // resolves to BatteryValue instead of plain StatusValue — even on leaf (Supplier)
+    // items with a perfectly ordinary static value. text may not populate for it, so
+    // battery_value is fetched as a fallback and resolved through STATUS_LABELS below.
+    var elQuery = 'query ($itemId: [ID!]) { items(ids: $itemId) { id name subitems { id name column_values(ids: ["' + suppCols.join('","') + '"], capabilities: [CALCULATED]) { id text ... on MirrorValue { display_value } ... on BatteryValue { battery_value { key count } is_leaf } } } } }';
+    for (var ec = 0, eChunks = chunk(elementIds, 100); ec < eChunks.length; ec++) {
+      var elData = await apiOrThrow(elQuery, { itemId: eChunks[ec] });
+      elData.items.forEach(function (it) {
+        elementById[String(it.id)] = {
+          elementName: it.name,
+          supplierRows: (it.subitems || []).map(function (s) {
+            var cv = {};
+            s.column_values.forEach(function (c) { cv[c.id] = c; });
+            return { name: s.name, status: txt(cv, COL_SUPPLIER_STATUS) || batteryLabel(cv, COL_SUPPLIER_STATUS), rfqSent: txt(cv, COL_RFQ_SENT_ACTUAL), quoteReceived: txt(cv, COL_SUPPLIER_QUOTE_RECEIVED) };
+          })
+        };
+      });
+    }
+
+    // ---------- 3. each distinct Scope's own planned dates ----------
+    var scopeById = {};
+    var scopeCols = [COL_ISSUE_RFQ_PLANNED, COL_SUBMIT_ANALYSIS_PLANNED, COL_PO_REQUIRED_PLANNED];
+    if (COL_DATE_QUOTE_REQD_PLANNED) scopeCols.push(COL_DATE_QUOTE_REQD_PLANNED);
+    var scQuery = 'query ($itemId: [ID!]) { items(ids: $itemId) { id group { id } column_values(ids: ["' + scopeCols.join('","') + '"], capabilities: [CALCULATED]) { id text ... on MirrorValue { display_value } } } }';
+    for (var sc = 0, sChunks = chunk(scopeIds, 100); sc < sChunks.length; sc++) {
+      var scData = await apiOrThrow(scQuery, { itemId: sChunks[sc] });
+      scData.items.forEach(function (it) {
+        var cv = {};
+        it.column_values.forEach(function (c) { cv[c.id] = c; });
+        scopeById[String(it.id)] = {
+          plan: txt(cv, COL_ISSUE_RFQ_PLANNED),
+          pco: txt(cv, COL_SUBMIT_ANALYSIS_PLANNED),
+          cco: txt(cv, COL_PO_REQUIRED_PLANNED),
+          quoteReqd: COL_DATE_QUOTE_REQD_PLANNED ? txt(cv, COL_DATE_QUOTE_REQD_PLANNED) : null,
+          groupId: it.group ? it.group.id : null
+        };
+      });
+    }
+
+    // ---------- 4. one DATA entry per Procurement package ----------
+    DATA = procItems.map(function (it) {
+      var pr = procById[it.id];
+      var cv = pr.cv;
+      var cn = splitCodeName(pr.name);
+      // Resolve EVERY linked Element (not just one) — union their suppliers for the
+      // breakdown table, and join their names for display. Bar 1's dates still come
+      // from a single Scope (the first linked Element's parent), set above.
+      var elements = (pr.elementIds || []).map(function (eid) { return elementById[eid]; }).filter(Boolean);
+      var scope = pr.scopeId ? scopeById[pr.scopeId] : null;
+
+      var supplierRows = [];
+      elements.forEach(function (el) { supplierRows = supplierRows.concat(el.supplierRows || []); });
+      var elementNames = elements.map(function (el) { return el.elementName; }).filter(Boolean).join(', ');
+      var quoteAgg = aggregateQuotes(supplierRows);
+      var earliestRfqSent = aggregateRfqSent(supplierRows);
+      var act = earliestRfqSent ? toISODateLocal(earliestRfqSent) : null;
+
+      var plan = scope ? (scope.plan || null) : null;
+      var empty = null;
+      if (!elements.length) empty = 'No linked Supplier Selection Element on this Procurement package — RFQ, quote and supplier decision dates cannot be resolved yet.';
+      else if (!scope) empty = 'The linked Supplier Selection Element has no parent Scope, so there are no planned dates to anchor the schedule to.';
+      else if (!plan) empty = 'No planned RFQ date on the linked Supplier Selection Scope, so the backward schedule has nothing to anchor to.';
+
+      var projectCol = cv[COL_PROJECT];
+      var status = txt(cv, COL_STATUS);
+      return {
+        id: pr.id,
+        code: cn.code, name: cn.name,
+        // Live status straight off the Procurement item (written by n8n) — anything
+        // unrecognized or empty degrades to 'none'. One package per card, so no reduce.
+        st: LABEL_TO_KEY[status] || 'none',
+        status: status,
+        statusKey: LABEL_TO_KEY[status] || 'none',
+        plan: plan,
+        pco: scope ? (scope.pco || null) : null,
+        cco: scope ? (scope.cco || null) : null,
+        quoteReqd: scope ? (scope.quoteReqd || null) : null,
+        act: act,
+        quoteAgg: quoteAgg,
+        supplierRows: supplierRows,
+        elementName: elementNames || null,
+        site: txt(cv, COL_SITE_INSTALL),
+        leadTime: (cv[COL_LEAD_TIME] && cv[COL_LEAD_TIME].text) ? parseFloat(cv[COL_LEAD_TIME].text) : null,
+        poPlaced: txt(cv, COL_PO_PLACED),
+        poRequired: txt(cv, COL_PO_REQUIRED),
+        orderRequired: txt(cv, COL_ORDER_REQUIRED),
+        orderPlaced: txt(cv, COL_ORDER_PLACED),
+        confirmedDelivery: txt(cv, COL_CONFIRMED_DELIVERY),
+        project: projectCol ? (projectCol.text || projectCol.display_value || projectCol._resolvedText || null) : null,
+        quantity: num(cvText(pick(pr.byTitle, ['Quantity+unit', 'Quantity + unit', 'Quantity unit', 'Quantity']))),
+        callOffs: pr.callOffIds.map(function (cid) { return coById[cid]; }).filter(Boolean).sort(coSort),
+        purchaseOrders: pr.poIds.map(function (pid2) { return poById[pid2]; }).filter(Boolean),
+        // UNVERIFIED against the new structure: the Active/Closed filter values are
+        // Supplier Selection group ids, so this keeps reading the resolved Scope's group.
+        groupId: scope ? scope.groupId : null,
+        empty: empty
+      };
+    });
+
+    setState({ loading: false, error: null });
+  } catch (err) {
+    setState({ loading: false, error: (err && err.message) || String(err) });
+  }
+}
+
+// ---------- per-package build (ported from design logic) ----------
+function buildPkg(r) {
+  var st = S[r.st];
+  var plan = d(r.plan), pco = d(r.pco), cco = d(r.cco), act = d(r.act);
+  // One card = one Procurement package; its own site install date.
+  var site = r.site ? d(r.site) : null;
+  // pco (Planned
+  // CO / Submit Analysis for Approval) is intentionally NOT required here — it's
+  // deprioritized/unvalidated per the client and only ever used as a fallback marker
+  // position below, never as a hard requirement for the timeline to render.
+  var hasData = !!(plan && cco && site);
+  var p = {
+    id: r.id,
+    code: r.code, name: r.name, status: st.label, statusKey: st.key, rank: st.rank,
+    site: site, cco: cco, hasData: hasData, isEmpty: !hasData,
+    emptyMsg: r.empty || 'Timeline unavailable.',
+    pillStyle: 'font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px; color: #fff; white-space: nowrap; background: ' + st.color + ';',
+    float: hasData ? daysBetween(TODAY, cco) : 9999,
+    project: r.project,
+    groupId: r.groupId
+  };
+
+  var facts = [
+    { k: 'Site install', v: fmt(site) },
+    { k: 'Critical call-off', v: fmt(cco) },
+    { k: 'RFQ planned / actual', v: fmt(plan) + ' / ' + (act ? fmt(act) : 'not sent') }
+  ];
+  if (hasData) {
+    var fl = daysBetween(TODAY, cco);
+    facts.push({
+      k: 'Float to critical',
+      v: fl < 0 ? (Math.abs(fl) + ' days overdue') : (fl + ' days'),
+      style: 'font-weight: 700; color: ' + (fl < 0 ? '#df2f4a' : fl < 30 ? '#b06a12' : 'var(--color-neutral-900)') + ';'
+    });
+  }
+  p.facts = facts;
+
+  // ---------- PO badge ----------
+  // The linked Purchase Orders item's Name IS the PO reference. A Placeholder row is
+  // rendered muted so it can't be mistaken for a real, issued PO number.
+  var poList = r.purchaseOrders || [];
+  if (poList.length) {
+    var first = poList[0];
+    var extra = poList.length - 1;
+    p.po = {
+      label: first.name + (extra > 0 ? '  +' + extra + ' more' : ''),
+      style: first.placeholder
+        ? 'font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 4px; white-space: nowrap; color: var(--color-neutral-600); border: 1px dashed var(--color-neutral-400);'
+        : 'font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 4px; white-space: nowrap; color: var(--color-accent-700); background: var(--color-accent-100); border: 1px solid var(--color-accent-400);',
+      tipTitle: first.placeholder ? 'Placeholder — no PO issued yet' : 'Purchase order',
+      tipBody: poList.map(function (po) { return po.name + (po.status ? ' · ' + po.status : ''); }).join('   |   ')
+    };
+  }
+
+  if (hasData) {
+    var bidReturn = r.quoteReqd ? d(r.quoteReqd) : null;
+    var hasBid = !!(bidReturn && bidReturn > plan && bidReturn < pco);
+
+    // Reuses the same aggregate computed once in loadData() — never recomputed here,
+    // so this marker can't drift from what the status calculation actually used.
+    var latestQuote = r.quoteAgg ? r.quoteAgg.latest : null;
+    var awaitingLabel = r.quoteAgg ? r.quoteAgg.awaitingLabel : null;
+
+    // ONE shared axis for EVERY bar in the card — Supplier Selection, Procurement and
+    // every call-off mini-bar — so a day is the same pixel width in each, the handoff
+    // date (Critical CO) sits at the same x, and every "today" line lines up vertically.
+    // Both ends stretch to cover the call-off dates too, otherwise a call-off issued
+    // before the RFQ or required after site install would clamp to the edge.
+    var coList = r.callOffs || [];
+    // Bar 1 collapsed → anchor the axis at cco (where Bar 2 starts) instead of the RFQ
+    // dates, so Bar 2 and its call-offs re-scale to the full card width. axisLate unchanged.
+    // Keyed on r.id (the actual Procurement item id), not r.code — code is a shared
+    // project prefix (e.g. "2026-165"), identical across every package in the same
+    // project, which previously made one card's toggle collapse every sibling card
+    // too. Default is collapsed (anything other than an explicit `false` counts as
+    // collapsed), per request — most cards never need Bar 1 open after setup.
+    var isCollapsed = state.ssCollapsed[r.id] !== false;
+    var axisEarly = isCollapsed ? [cco, TODAY] : [plan, act || plan, TODAY];
+    var axisLate = [site, TODAY];
+    if (r.confirmedDelivery && d(r.confirmedDelivery)) axisLate.push(d(r.confirmedDelivery));
+    // Call-off issue dates stretch the axis too, so a call-off planned before the RFQ
+    // (or issued late) can't clamp against the edge of the shared axis.
+    coList.forEach(function (co) {
+      [co.plannedIssue, co.actualIssue].forEach(function (s) {
+        var dt = s ? d(s) : null;
+        if (dt) { axisEarly.push(dt); axisLate.push(dt); }
+      });
+    });
+    var lo = new Date(Math.min.apply(null, axisEarly) - 6 * 86400000);
+    var hi = new Date(Math.max.apply(null, axisLate) + 8 * 86400000);
+    var span = hi - lo;
+    var pos = function (dt) { return ((dt - lo) / span) * 100; };
+    var cl = function (v) { return Math.max(0, Math.min(100, v)); };
+
+    var seg = function (a, b, bg, label, note) {
+      var l = cl(pos(a)), w = cl(pos(b)) - l;
+      if (w <= 0) return null;
+      return {
+        style: 'position: absolute; top: 0; bottom: 0; left: ' + l.toFixed(2) + '%; width: ' + w.toFixed(2) + '%; background: ' + bg + '; cursor: default;',
+        tipTitle: label,
+        tipBody: fmt(a) + ' → ' + fmt(b) + '  ·  ' + daysBetween(a, b) + ' days' + (note ? '  ·  ' + note : '')
+      };
+    };
+
+    var overlay = function (from, barStart, barEnd, title, note) {
+      if (!from) return null;
+      var s0 = new Date(Math.max(from, barStart));
+      var e0 = new Date(Math.min(TODAY, barEnd));
+      if (e0 <= s0) return null;
+      var l = cl(pos(s0)), w = cl(pos(e0)) - l;
+      if (w <= 0) return null;
+      return {
+        style: 'position: absolute; bottom: 0; height: 8px; left: ' + l.toFixed(2) + '%; width: ' + w.toFixed(2) + '%; background: ' + SEGC.done + ';',
+        tipTitle: title,
+        tipBody: fmt(from) + ' → today  ·  ' + daysBetween(from, TODAY) + ' days elapsed' + (note ? '  ·  ' + note : '')
+      };
+    };
+
+    var rule = function (dt, strong) {
+      return { style: 'position: absolute; top: -1px; bottom: -1px; width: ' + (strong ? '2px' : '1px') + '; left: ' + cl(pos(dt)).toFixed(2) + '%; background: ' + (strong ? '#323338' : 'rgba(255,255,255,0.65)') + ';' };
+    };
+
+    var mk = function (label, dt, color, priority, opts) {
+      var m = { label: label, dt: dt, color: color, l: cl(pos(dt)), priority: (priority == null ? 9 : priority) };
+      if (opts) { m.dateText = opts.dateText; m.placeholder = opts.placeholder; }
+      return m;
+    };
+
+    var lay = function (arr, isAbove) {
+      // Lanes are claimed by importance, not left-to-right, and grow dynamically —
+      // a fixed 2-lane cap forced any 3rd close marker back into lane 0, fusing
+      // its text with whatever was already there.
+      var lanes = [];
+      var clear = function (lane, l) {
+        return lanes[lane].every(function (x) { return Math.abs(x - l) >= 13; });
+      };
+      arr.slice().sort(function (a, b) { return a.priority - b.priority || a.l - b.l; })
+        .forEach(function (m) {
+          var row = 0;
+          while (lanes[row] && !clear(row, m.l)) row++;
+          if (!lanes[row]) lanes[row] = [];
+          lanes[row].push(m.l);
+          m.row = row;
+        });
+      return arr.slice().sort(function (a, b) { return a.l - b.l; }).map(function (m) {
+        var row = m.row;
+        var tx = m.l < 8 ? '0' : m.l > 92 ? '-100%' : '-50%';
+        var ta = m.l < 8 ? 'left' : m.l > 92 ? 'right' : 'center';
+        var off = row * 32;
+        var vpos = isAbove ? 'bottom: ' + (10 + off) + 'px;' : 'top: ' + (10 + off) + 'px;';
+        return {
+          row: row,
+          label: m.label,
+          date: m.dateText != null ? m.dateText : fmt(m.dt),
+          color: m.color,
+          placeholder: !!m.placeholder,
+          style: 'position: absolute; ' + vpos + ' left: ' + m.l.toFixed(2) + '%; transform: translateX(' + tx + '); text-align: ' + ta + ';',
+          leaderStyle: 'position: absolute; left: ' + m.l.toFixed(2) + '%; width: 1px; height: ' + (10 + off) + 'px; background: ' + m.color + '; opacity: ' + (m.placeholder ? '0.3' : '0.55') + '; ' + (isAbove ? 'bottom: 0;' : 'top: 0;')
+        };
+      });
+    };
+
+    // Label gutters grow with the number of lanes actually used, so a bar that stacks
+    // three same-date markers doesn't clip them against the bar above it.
+    var gutter = function (marks) {
+      var maxRow = 0;
+      marks.forEach(function (m) { if (m.row > maxRow) maxRow = m.row; });
+      return Math.max(76, 10 + maxRow * 32 + 34);
+    };
+
+    // ---------- Bar 1 — Supplier Selection: Issue RFQ → Supplier Decision ----------
+    // Reads the resolved Scope's planned dates and this package's own Element's suppliers.
+    var supplierSelectionBar = function () {
+      var b1Segs = hasBid
+        ? [seg(plan, bidReturn, SEGC.planned, 'Bid period', 'RFQ issue to bid return'),
+           seg(bidReturn, cco, 'linear-gradient(90deg, ' + SEGC.buffer + ', ' + BEYOND + ')', 'Bid return to critical call-off', 'internal contingency before the hard deadline')]
+        : [seg(plan, cco, 'linear-gradient(90deg, ' + SEGC.planned + ', ' + SEGC.buffer + ', ' + BEYOND + ')', 'RFQ issue to critical call-off', 'internal contingency before the hard deadline')];
+
+      var b1Above = [mk('Plan start', plan, 'var(--color-neutral-800)', 3), mk('Supplier Decision', cco, '#e2445c', 0)];
+      if (hasBid) b1Above.push(mk('Bid return', bidReturn, '#8a6100', 4));
+
+      var b1Below = [];
+      if (TODAY >= lo && TODAY <= cco) b1Below.push(mk('Today', TODAY, 'var(--color-text)', 0));
+      if (act) b1Below.push(mk('RFQ sent', act, 'var(--color-neutral-800)', 1));
+      if (latestQuote) {
+        b1Below.push(mk(awaitingLabel ? 'Latest quote' : 'Quotes in', latestQuote, SEGC.done, 2,
+          awaitingLabel ? { dateText: fmt(latestQuote) + ' · ' + awaitingLabel } : null));
+      } else if (awaitingLabel) {
+        // pco (Planned CO) is no longer guaranteed to be set — fall back to cco, same
+        // pattern already used elsewhere in this file for an optional anchor date.
+        b1Below.push(mk('Quotes', pco || cco, 'var(--color-neutral-600)', 2, { dateText: awaitingLabel, placeholder: true }));
+      }
+
+      var b1Rules = [rule(plan), rule(cco)];
+      if (hasBid) b1Rules.push(rule(bidReturn));
+      if (TODAY >= lo && TODAY <= cco) b1Rules.push(rule(TODAY, true));
+
+      var aboveM = lay(b1Above, true), belowM = lay(b1Below, false);
+      return {
+        title: 'Supplier Selection',
+        subtitle: fmt(plan) + ' → ' + fmt(cco) + '  ·  ' + daysBetween(plan, cco) + ' days',
+        segs: b1Segs.filter(Boolean),
+        actual: overlay(act, plan, cco, 'RFQ progress', 'issued to today'),
+        rules: b1Rules, marksAbove: aboveM, marksBelow: belowM,
+        aboveH: gutter(aboveM), belowH: gutter(belowM)
+      };
+    };
+
+    // ---------- Bar 2 — Procurement / Ordering ----------
+    // The package's own ordering bar — exactly one per card.
+    var orderingBar = function (link) {
+      var lSite = link.site ? d(link.site) : null;
+      if (!lSite) return null;
+      var poPlaced = link.poPlaced ? d(link.poPlaced) : null;
+      var poRequired = link.poRequired ? d(link.poRequired) : null;
+      var orderRequired = link.orderRequired ? d(link.orderRequired) : null;
+      var orderPlaced = link.orderPlaced ? d(link.orderPlaced) : null;
+      var confirmedDelivery = link.confirmedDelivery ? d(link.confirmedDelivery) : null;
+
+      // Segment color reflects this call-off's OWN real status from n8n,
+      // not a locally re-derived guess. The old "no PO + call-off passed"
+      // heuristic couldn't express "PO placed but still too late" — exactly
+      // the Mitigation Required case where a PO exists but the projected
+      // delivery (PO Placed + Design Time + Lead Time) still overruns Site
+      // Install. Using link.statusKey directly means the bar can never
+      // disagree with the pill again, for any of the four states.
+      var segStatus = S[link.statusKey] || S.none;
+      var segs = [seg(cco, lSite, segStatus.block,
+        segStatus.label,
+        'critical call-off to material on site — status: ' + segStatus.label)];
+
+      var above = [mk('Site install', lSite, 'var(--color-neutral-900)', 1)];
+      if (confirmedDelivery) above.push(mk('Confirmed delivery', confirmedDelivery, '#037f4c', 2));
+      else above.push(mk('Confirmed delivery', lSite, 'var(--color-neutral-500)', 3, { dateText: 'Not yet confirmed', placeholder: true }));
+      // 'Critical CO' dropped as a separate label — 'PO Required' serves the same
+      // purpose. Reads the real PO Required / Order Required fields (distinct board
+      // columns), falling back to Critical CO only if a link hasn't had them filled in.
+      above.push(mk('PO required', poRequired || cco, '#e2445c', 0));
+      above.push(mk('Order required', orderRequired || cco, '#8a6100', 5));
+
+      var below = [];
+      if (TODAY >= cco && TODAY <= hi) below.push(mk('Today', TODAY, 'var(--color-text)', 0));
+      if (poPlaced) below.push(mk('PO placed', poPlaced, SEGC.done, 1));
+      if (orderPlaced) {
+        // Distinct board concept from PO Placed — reads its own real field.
+        below.push(mk('Order placed', orderPlaced, '#7a5cf0', 2));
+      }
+
+      var rules = [rule(cco), rule(lSite)];
+      if (confirmedDelivery) rules.push(rule(confirmedDelivery));
+      if (TODAY >= cco && TODAY <= hi) rules.push(rule(TODAY, true));
+
+      var aboveM = lay(above, true), belowM = lay(below, false);
+      return {
+        title: 'Procurement / Ordering' + (r.elementName ? ' — ' + r.elementName : ''),
+        subtitle: fmt(cco) + ' → ' + fmt(lSite) + '  ·  ' + daysBetween(cco, lSite) + ' days float',
+        segs: segs.filter(Boolean),
+        actual: overlay(poPlaced, cco, lSite, 'Ordered', 'PO placed to today'),
+        rules: rules, marksAbove: aboveM, marksBelow: belowM,
+        aboveH: gutter(aboveM), belowH: gutter(belowM)
+      };
+    };
+
+    // ---------- Tier 3 — call-offs, nested under Bar 2 ----------
+    // One bar per call-off, on the card's shared lo/hi/pos() axis: Planned Issue (from
+    // the Call-Offs board) → the parent Procurement item's Site Install Date, which is
+    // the same end date for every call-off under it. Collapsed by default; expansion is
+    // held in state.coOpen, keyed by package code.
+    var callOffTier = function (link, list) {
+      if (!list.length) return null; // zero call-offs → no section at all, not a "0" line
+
+      var end = link.site ? d(link.site) : null;
+      var totalCalled = 0, anyCalled = false, pending = 0, unset = 0;
+      list.forEach(function (co) {
+        if (co.qtyCalledOff != null) { totalCalled += co.qtyCalledOff; anyCalled = true; }
+        if (normTitle(co.callOffStatus) === normTitle(PENDING_STATUS)) pending++;
+        if (callOffStatusCfg(co.callOffStatus).empty) unset++;
+      });
+
+      var bits = [list.length + (list.length === 1 ? ' call-off' : ' call-offs')];
+      if (anyCalled) bits.push(fmtNum(totalCalled) + (link.quantity != null ? ' / ' + fmtNum(link.quantity) : '') + ' units drawn');
+      if (pending) bits.push(pending + ' pending commercial approval');
+      // Summary badge uses the same muted treatment as the row badges; only the wording
+      // changes: awaiting Commercial, statuses simply missing, or genuinely all approved.
+      var summaryLabel, summaryCfg;
+      if (pending) { summaryLabel = pending + ' awaiting approval'; summaryCfg = callOffStatusCfg(PENDING_STATUS); }
+      else if (unset) { summaryLabel = unset + ' without status'; summaryCfg = STATUS_UNSET; }
+      else { summaryLabel = 'All approved'; summaryCfg = callOffStatusCfg('Approved by Commercial'); }
+
+      // Plan issue and Site install are the same date on every call-off under one
+      // Procurement item, so their labels are drawn once, on the first row only — every
+      // bar still starts and ends at the correct x for those shared dates.
+      var coGutter = function (marks) {
+        var maxRow = 0;
+        marks.forEach(function (m) { if (m.row > maxRow) maxRow = m.row; });
+        return marks.length ? (10 + maxRow * 32 + 26) : 4;
+      };
+
+      var rows = list.map(function (co, i) {
+        var cs = callOffStatusCfg(co.callOffStatus);
+        var statusText = co.callOffStatus || 'No call-off status';
+        var pi = co.plannedIssue ? d(co.plannedIssue) : null;
+        var ai = co.actualIssue ? d(co.actualIssue) : null;
+        var called = co.qtyCalledOff, recvd = co.qtyReceived;
+        var fillStyle = 'background: ' + cs.block + '; border-radius: 2px;' + (cs.dashed ? ' border: 1px dashed var(--color-neutral-400);' : '');
+
+        var segs = [];
+        if (pi && end && end > pi) {
+          var l0 = cl(pos(pi)), w0 = cl(pos(end)) - l0;
+          if (w0 > 0) segs.push({
+            style: 'position: absolute; top: 0; bottom: 0; left: ' + l0.toFixed(2) + '%; width: ' + w0.toFixed(2) + '%; ' + fillStyle,
+            tipTitle: co.name + ' — ' + statusText,
+            tipBody: 'Plan issue ' + fmt(pi) + ' → site install ' + fmt(end) + '  ·  ' + daysBetween(pi, end) + ' days'
+          });
+        } else if (pi || end) {
+          var only = pi || end;
+          segs.push({
+            style: 'position: absolute; top: 0; bottom: 0; width: 8px; margin-left: -4px; left: ' + cl(pos(only)).toFixed(2) + '%; ' + fillStyle,
+            tipTitle: co.name + ' — ' + statusText,
+            tipBody: (pi ? 'Plan issue ' : 'Site install ') + fmt(only) + '  ·  only one date available'
+          });
+        }
+
+        // Same marker machinery as the bars above: 'Plan issue' / 'Site install' read
+        // like Bar 1's 'Plan start' and Bar 2's 'Site install' (planned, above the bar);
+        // 'Actual issue' reads like Bar 1's 'RFQ sent' (actual, below the bar) and varies
+        // per call-off, so it is drawn on every row.
+        var above = [];
+        if (i === 0) {
+          if (pi) above.push(mk('Plan issue', pi, 'var(--color-neutral-800)', 3));
+          if (end) above.push(mk('Site install', end, 'var(--color-neutral-900)', 1));
+        }
+        var aboveM = lay(above, true);
+        var belowM = lay(ai ? [mk('Actual issue', ai, 'var(--color-neutral-800)', 1)] : [], false);
+
+        return {
+          name: co.name,
+          qtyText: (called != null || recvd != null) ? (fmtNum(recvd == null ? 0 : recvd) + ' / ' + fmtNum(called) + ' received') : null,
+          statusLabel: statusText,
+          statusStyle: mutedBadge(cs),
+          segs: segs,
+          marksAbove: aboveM, marksBelow: belowM,
+          aboveH: coGutter(aboveM), belowH: coGutter(belowM),
+          todayStyle: (TODAY >= lo && TODAY <= hi)
+            ? 'position: absolute; top: -3px; bottom: -3px; width: 1px; left: ' + cl(pos(TODAY)).toFixed(2) + '%; background: #323338; opacity: 0.5;'
+            : null
+        };
+      });
+
+      var open = !!state.coOpen[r.code || r.name];
+      return {
+        open: open,
+        code: r.code || r.name,
+        summary: bits.join('  ·  '),
+        chevronStyle: 'display: inline-block; font-size: 12px; line-height: 1; color: var(--color-accent); transform: rotate(' + (open ? '90deg' : '0deg') + ');',
+        badgeLabel: summaryLabel,
+        badgeStyle: mutedBadge(summaryCfg),
+        rows: rows
+      };
+    };
+
+    var bar2 = orderingBar(r);
+    bar2.callOffs = callOffTier(r, coList);
+    var bar1 = isCollapsed
+      ? { title: 'Supplier Selection', subtitle: fmt(plan) + ' → ' + fmt(cco) + '  ·  ' + daysBetween(plan, cco) + ' days', collapsed: true }
+      : supplierSelectionBar();
+    bar1.toggle = { code: r.id, collapsed: isCollapsed };
+    p.bars = [bar1, bar2];
+  }
+
+  var open = !!state.open[r.code];
+  p.breakdownOpen = open;
+  p.breakdownChevron = open ? '▾' : '▸';
+  p.breakdownLabel = open ? 'Hide supplier breakdown' : 'Show supplier breakdown';
+  var cell = 'padding: 7px 10px; background: var(--color-neutral-100);';
+  var headCell = 'padding: 7px 10px; background: #f4f5f7; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;';
+  var lateCell = 'padding: 7px 10px; background: #fdeced; color: #c3132b; font-weight: 600;';
+
+  // The two planned columns are package-level: the backward schedule was calculated once
+  // for the whole package, so every supplier row repeats the same planned dates.
+  var rfqPlanned = r.plan ? d(r.plan) : null;
+  var quoteReqdPlanned = r.quoteReqd ? d(r.quoteReqd) : null;
+
+  // Late = delivered after the planned date, or still outstanding with the planned date
+  // already behind us. Never applied to the planned columns themselves.
+  var isLate = function (actual, planned) {
+    if (!planned) return false;
+    return actual ? actual > planned : TODAY > planned;
+  };
+  var actualCell = function (actual, planned) {
+    return isLate(actual, planned) ? lateCell : cell;
+  };
+
+  var supplierRows = (r.supplierRows && r.supplierRows.length) ? r.supplierRows : null;
+  p.breakdownRows = [
+    { supplier: 'Supplier', rfqPlanned: 'RFQ planned', rfq: 'RFQ sent', quotePlanned: 'Quote reqd planned', quote: 'Quote received', state2: 'Status',
+      c1: headCell, cRfqPlanned: headCell, cRfq: headCell, cQuotePlanned: headCell, cQuote: headCell, c: headCell }
+  ];
+
+  if (supplierRows) {
+    var selectedCell = 'padding: 7px 10px; background: #e6f7ec; color: #037f4c; font-weight: 600;';
+    supplierRows.forEach(function (s) {
+      var sent = s.rfqSent ? d(s.rfqSent) : null;
+      var recv = s.quoteReceived ? d(s.quoteReceived) : null;
+      var isSelected = (s.status || '').trim().toLowerCase() === 'selected';
+      p.breakdownRows.push({
+        supplier: s.name || '—',
+        rfqPlanned: fmt(rfqPlanned),
+        rfq: sent ? fmt(sent) : (isLate(null, rfqPlanned) ? 'Outstanding' : '—'),
+        quotePlanned: fmt(quoteReqdPlanned),
+        quote: recv ? fmt(recv) : (isLate(null, quoteReqdPlanned) ? 'Outstanding' : '—'),
+        state2: s.status || '—',
+        c1: isSelected ? selectedCell : cell,
+        cRfqPlanned: isSelected ? selectedCell : (cell + ' color: var(--color-neutral-700);'),
+        cRfq: isSelected ? selectedCell : actualCell(sent, rfqPlanned),
+        cQuotePlanned: isSelected ? selectedCell : (cell + ' color: var(--color-neutral-700);'),
+        cQuote: isSelected ? selectedCell : actualCell(recv, quoteReqdPlanned),
+        c: isSelected ? selectedCell : cell
+      });
+    });
+  } else {
+    var stubRfq = isLate(null, rfqPlanned) ? 'Outstanding' : '—';
+    var stubQuote = isLate(null, quoteReqdPlanned) ? 'Outstanding' : '—';
+    for (var si = 0; si < 2; si++) {
+      p.breakdownRows.push({
+        supplier: 'Awaiting board connection',
+        rfqPlanned: fmt(rfqPlanned),
+        rfq: stubRfq,
+        quotePlanned: fmt(quoteReqdPlanned),
+        quote: stubQuote,
+        state2: 'Not wired',
+        c1: cell + ' color: var(--color-neutral-600);',
+        cRfqPlanned: cell + ' color: var(--color-neutral-700);',
+        cRfq: actualCell(null, rfqPlanned),
+        cQuotePlanned: cell + ' color: var(--color-neutral-700);',
+        cQuote: actualCell(null, quoteReqdPlanned),
+        c: cell + ' color: var(--color-neutral-500);'
+      });
+    }
+  }
+  p.breakdownNote = 'Competing suppliers from Commercial | Supplier Selection (board ' + SUPPLIER_SELECTION_BOARD_ID + ').';
+  return p;
+}
+
+// ---------- top-level computed view model ----------
+function computeView() {
+  var all = DATA.map(buildPkg);
+  var matchesPkg = function (p) {
+    if (state.pkg === 'all') return true;
+    return p.name === state.pkg;
+  };
+  var matchesProject = function (p) {
+    if (state.project === 'all') return true;
+    return p.project === state.project;
+  };
+  var matchesGroup = function (p) {
+    if (state.pkgGroup === 'all') return true;
+    return p.groupId === state.pkgGroup;
+  };
+  var visible = all.filter(function (p) {
+    return (!state.filter || p.statusKey === state.filter) &&
+      matchesPkg(p) && matchesProject(p) && matchesGroup(p);
+  });
+
+  // Package options come from the live data — one entry per package, code-prefixed.
+  var packageOptions = all.map(function (p) {
+    return { value: p.name, label: (p.code ? p.code + ' — ' : '') + p.name };
+  }).sort(function (a, b) { return a.label.localeCompare(b.label); });
+
+  // Project options come from the live data, never a hardcoded list.
+  var projectOptions = [];
+  DATA.forEach(function (r) {
+    if (r.project && projectOptions.indexOf(r.project) === -1) projectOptions.push(r.project);
+  });
+  projectOptions.sort(function (a, b) { return a.localeCompare(b); });
+
+
+  var cmp = {
+    severity: function (a, b) { return a.rank - b.rank || (a.cco ? a.float : 0) - (b.cco ? b.float : 0); },
+    critical: function (a, b) { return (a.cco ? a.cco.getTime() : 8e12) - (b.cco ? b.cco.getTime() : 8e12); },
+    site: function (a, b) { return (a.site ? a.site.getTime() : 8e12) - (b.site ? b.site.getTime() : 8e12); },
+    float: function (a, b) { return a.float - b.float; },
+    name: function (a, b) { return a.name.localeCompare(b.name); }
+  }[state.sort];
+
+  var groups = ORDER.map(function (k) {
+    var items = visible.filter(function (p) { return p.statusKey === k; }).sort(cmp);
+    var closed = !!state.closed[k];
+    var worst = items.length ? items.slice().sort(function (a, b) { return a.float - b.float; })[0] : null;
+    return {
+      key: k, label: S[k].label, color: S[k].color, count: items.length, packages: items,
+      open: !closed, chevron: closed ? '▸ Expand' : '▾ Collapse',
+      hint: worst && worst.hasData ? (worst.float < 0 ? 'tightest: ' + Math.abs(worst.float) + ' days past critical call-off' : 'tightest float ' + worst.float + ' days') : (k === 'none' ? 'missing data' : ''),
+      headerStyle: 'width: 100%; display: flex; align-items: center; gap: 12px; padding: 11px 16px; background: ' + S[k].block + '; border: none; border-radius: var(--radius); cursor: pointer; text-align: left; color: #fff;'
+    };
+  }).filter(function (g) { return g.count > 0; });
+
+  var stats = ORDER.map(function (k) {
+    var count = all.filter(function (p) { return p.statusKey === k; }).length;
+    var active = state.filter === k;
+    return {
+      key: k, label: S[k].label, color: S[k].color, count: count,
+      style: 'padding: 14px 16px 16px; cursor: pointer; text-align: left; color: #fff; border: none; border-radius: var(--radius); background: ' + S[k].block + '; box-shadow: ' + (active ? '0 0 0 3px rgba(0,115,234,0.55)' : 'var(--shadow-card)') + '; opacity: ' + (state.filter && !active ? '0.45' : '1') + ';'
+    };
+  });
+
+  var anyClosed = ORDER.some(function (k) { return state.closed[k]; });
+
+  return {
+    stats: stats, groups: groups, noResults: groups.length === 0,
+    packageOptions: packageOptions,
+    projectOptions: projectOptions,
+    toggleAllLabel: anyClosed ? 'Expand all' : 'Collapse all', anyClosed: anyClosed,
+    legend: [
+      { label: 'Bid period · lead time', swatch: SEGC.planned },
+      { label: 'Analysis & negotiation', swatch: SEGC.buffer },
+      { label: 'Call-off missed', swatch: BEYOND },
+      { label: 'Actual progress', swatch: SEGC.done },
+      { label: 'Remaining to plan', swatch: '#e6e9ef' }
+    ],
+    statusKey: ORDER.map(function (k) {
+      return { label: S[k].label, style: 'font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px; color: #fff; background: ' + S[k].color + ';' };
+    }),
+    footNote: 'Live from Commercial | Procurement and Commercial | Supplier Selection. Today ' + fmt(TODAY) + '. Dates calculated backwards from Site Install: − lead time = critical call-off, − approval = planned call-off, − analysis & bid period = RFQ issue.'
+  };
+}
+
+// ---------- HTML builders ----------
+function esc(s) { return (s == null ? '' : String(s)).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+
+function renderCorners() { return '<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>'; }
+
+function renderCard(p) {
+  var html = '<div class="blueprint" style="padding: 16px 20px 18px;">' + renderCorners();
+  html += '<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;">';
+  if (p.code) html += '<div style="font-size: 12px; font-weight: 600; color: var(--color-neutral-600);">' + esc(p.code) + '</div>';
+  html += '<div style="font-size: 18px; font-weight: 600; line-height: 1.25; flex: 1 1 240px; min-width: 0;">' + esc(p.name) + '</div>';
+  html += '<span style="' + p.pillStyle + '">' + esc(p.status) + '</span></div>';
+
+  html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 4px 22px; margin-top: 8px; font-size: 12.5px; color: var(--color-neutral-800);">';
+  p.facts.forEach(function (f) {
+    html += '<div style="min-width: 0;"><span style="font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-neutral-600);">' + esc(f.k) + '</span> <span style="' + (f.style || '') + '">' + esc(f.v) + '</span></div>';
+  });
+  if (p.po) {
+    html += '<div style="min-width: 0; display: flex; align-items: center; gap: 7px;">' +
+      '<span style="font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--color-neutral-600);">Purchase order</span>' +
+      '<span class="tip-hover" data-tip-title="' + esc(p.po.tipTitle) + '" data-tip-body="' + esc(p.po.tipBody) + '" style="' + p.po.style + '">' + esc(p.po.label) + '</span></div>';
+  }
+  html += '</div>';
+
+  if (p.hasData) {
+    html += '<div style="margin-top: 18px; display: flex; flex-direction: column; gap: 14px;">';
+    p.bars.forEach(function (bar) {
+      var mark = function (m) {
+        return '<div style="' + m.leaderStyle + '"></div>' +
+          '<div style="' + m.style + '">' +
+          '<div style="font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: ' + m.color + '; white-space: nowrap;">' + esc(m.label) + '</div>' +
+          '<div style="font-size: 11px; white-space: nowrap; ' + (m.placeholder
+            ? 'color: var(--color-neutral-600); border: 1px dashed var(--color-neutral-400); border-radius: 3px; padding: 0 5px; display: inline-block;'
+            : 'color: var(--color-neutral-700);') + '">' + esc(m.date) + '</div></div>';
+      };
+
+      html += '<div>';
+      html += '<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;">' +
+        '<div style="font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-neutral-700);">' + esc(bar.title) + '</div>' +
+        '<div style="font-size: 11.5px; color: var(--color-neutral-600); white-space: nowrap;">' + esc(bar.subtitle) + '</div>' +
+        (bar.toggle
+          ? '<button data-action="toggle-ss" data-code="' + esc(bar.toggle.code) + '" style="display: inline-flex; align-items: center; gap: 5px; background: transparent; border: 0; padding: 0; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--color-accent);">' +
+            '<span>' + (bar.toggle.collapsed ? '▸' : '▾') + '</span><span>' + (bar.toggle.collapsed ? 'Expand' : 'Collapse') + '</span></button>'
+          : '') +
+        '</div>';
+      if (bar.collapsed) { html += '</div>'; return; }
+
+      html += '<div style="position: relative; height: ' + (bar.aboveH || 76) + 'px; margin-top: 6px;">';
+      bar.marksAbove.forEach(function (m) { html += mark(m); });
+      html += '</div>';
+
+      html += '<div style="position: relative; height: 26px; background: #e6e9ef; border-radius: 4px; overflow: hidden;">';
+      bar.segs.forEach(function (sg) {
+        html += '<div class="tip-hover" data-tip-title="' + esc(sg.tipTitle) + '" data-tip-body="' + esc(sg.tipBody) + '" style="' + sg.style + '"></div>';
+      });
+      if (bar.actual) {
+        html += '<div class="tip-hover" data-tip-title="' + esc(bar.actual.tipTitle) + '" data-tip-body="' + esc(bar.actual.tipBody) + '" style="' + bar.actual.style + '"></div>';
+      }
+      bar.rules.forEach(function (rl) { html += '<div style="' + rl.style + '"></div>'; });
+      html += '</div>';
+
+      html += '<div style="position: relative; height: ' + (bar.belowH || 76) + 'px;">';
+      bar.marksBelow.forEach(function (m) { html += mark(m); });
+      html += '</div>';
+
+      if (bar.callOffs) {
+        var co = bar.callOffs;
+        html += '<div style="position: relative;">';
+        // Vertical guide down the left edge of the group — the tier reads as a collapsed
+        // sub-table under Bar 2. Drawn behind the full-width tracks, which keep the
+        // card's shared axis; only the labels are indented.
+        if (co.open) html += '<div style="position: absolute; z-index: 1; left: 9px; top: 0; bottom: 6px; width: 1px; background: var(--color-neutral-400);"></div>';
+        html += '<button data-action="toggle-calloffs" data-code="' + esc(co.code) + '" style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; width: 100%; padding: 3px 0 3px 22px; background: transparent; border: 0; cursor: pointer; text-align: left;">' +
+          '<span style="' + co.chevronStyle + '">▸</span>' +
+          '<span style="font-size: 12.5px; font-weight: 600; white-space: nowrap; color: var(--color-neutral-800);">' + esc(co.summary) + '</span>' +
+          '<span style="' + co.badgeStyle + '">' + esc(co.badgeLabel) + '</span></button>';
+        if (co.open) {
+          html += '<div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding-bottom: 3px;">';
+          co.rows.forEach(function (row) {
+            html += '<div>';
+            html += '<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; padding-left: 22px; font-size: 11.5px; color: var(--color-neutral-700);">' +
+              '<span style="font-weight: 600; white-space: nowrap; color: var(--color-neutral-900);">' + esc(row.name) + '</span>' +
+              (row.statusLabel ? '<span style="' + row.statusStyle + '">' + esc(row.statusLabel) + '</span>' : '') +
+              (row.qtyText ? '<span style="white-space: nowrap;">' + esc(row.qtyText) + '</span>' : '') +
+              '</div>';
+            html += '<div style="position: relative; height: ' + row.aboveH + 'px; margin-top: 4px;">';
+            row.marksAbove.forEach(function (m) { html += mark(m); });
+            html += '</div>';
+            html += '<div style="position: relative; height: 12px; background: var(--color-neutral-200); border-radius: 3px;">';
+            row.segs.forEach(function (sg) {
+              html += '<div class="tip-hover" data-tip-title="' + esc(sg.tipTitle) + '" data-tip-body="' + esc(sg.tipBody) + '" style="' + sg.style + '"></div>';
+            });
+            if (row.todayStyle) html += '<div style="' + row.todayStyle + '"></div>';
+            html += '</div>';
+            html += '<div style="position: relative; height: ' + row.belowH + 'px;">';
+            row.marksBelow.forEach(function (m) { html += mark(m); });
+            html += '</div></div>';
+          });
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      if (bar.callOffNote) {
+        html += '<div style="padding-left: 22px; margin-top: 2px; font-size: 11.5px; color: var(--color-neutral-600);">' + esc(bar.callOffNote) + '</div>';
+      }
+
+      html += '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div style="margin-top: 14px; border: 1px solid #ffcb00; border-radius: 6px; padding: 10px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; background: #fff8e0;">' +
+      '<span style="font-size: 12px; font-weight: 700; color: #8a6100;">No timeline</span>' +
+      '<span style="font-size: 12.5px; color: var(--color-neutral-800);">' + esc(p.emptyMsg) + '</span></div>';
+  }
+
+  html += '<div style="margin-top: 14px; border-top: 1px solid var(--color-divider); padding-top: 10px;">';
+  html += '<button data-action="toggle-breakdown" data-code="' + esc(p.code || p.name) + '" style="display: inline-flex; align-items: center; gap: 7px; background: transparent; border: 0; padding: 0; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--color-accent);">' +
+    '<span>' + p.breakdownChevron + '</span><span>' + p.breakdownLabel + '</span></button>';
+  if (p.breakdownOpen) {
+    html += '<div style="margin-top: 10px;"><div style="display: grid; grid-template-columns: minmax(150px, 2fr) repeat(5, minmax(92px, 1fr)); gap: 1px; background: var(--color-divider); border: 1px solid var(--color-divider); font-size: 12.5px;">';
+    p.breakdownRows.forEach(function (b) {
+      html += '<div style="' + b.c1 + '">' + esc(b.supplier) + '</div>' +
+        '<div style="' + b.cRfqPlanned + '">' + esc(b.rfqPlanned) + '</div>' +
+        '<div style="' + b.cRfq + '">' + esc(b.rfq) + '</div>' +
+        '<div style="' + b.cQuotePlanned + '">' + esc(b.quotePlanned) + '</div>' +
+        '<div style="' + b.cQuote + '">' + esc(b.quote) + '</div>' +
+        '<div style="' + b.c + '">' + esc(b.state2) + '</div>';
+    });
+    html += '</div><div style="margin-top: 8px; font-size: 12px; color: var(--color-neutral-700);">' + esc(p.breakdownNote) + '</div></div>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+function render() {
+  var root = document.getElementById('root');
+
+  if (state.loading) {
+    root.innerHTML = '<div style="padding: 40px; font-size: 14px; font-weight: 600; color: var(--color-neutral-700);">Loading procurement packages…</div>';
+    return;
+  }
+  if (state.error) {
+    root.innerHTML = '<div class="blueprint" style="padding: 24px; background: #fdeceb;">' + renderCorners() +
+      '<div style="font-size: 15px; font-weight: 700; color: #e2445c; margin-bottom: 6px;">Could not load packages</div>' +
+      '<div style="font-size: 13px; color: var(--color-neutral-800); margin-bottom: 14px;">' + esc(state.error) + '</div>' +
+      '<button data-action="retry" style="height: 34px; padding: 0 14px; font-size: 13px; font-weight: 600; border: 1px solid var(--color-divider); border-radius: 4px; background: #fff; color: var(--color-accent); cursor: pointer;">Retry</button></div>';
+    return;
+  }
+
+  var v = computeView();
+  var html = '';
+
+  if (DEMO) {
+    html += '<div class="blueprint" style="padding: 9px 14px; background: #fff8e0; border-color: #ffcb00;">' + renderCorners() +
+      '<span style="font-size: 12px; font-weight: 700; color: #8a6100;">Demo data</span> ' +
+      '<span style="font-size: 12.5px; color: var(--color-neutral-800);">Sample packages for previewing the call-off tier. Drop <code>?demo</code> from the URL to load live monday.com data.</span></div>';
+  }
+
+  html += '<div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px 24px; border-bottom: 1px solid var(--color-divider); padding-bottom: 14px;">' +
+    '<div style="min-width: 260px;"><div style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-neutral-700);">Commercial | Procurement</div>' +
+    '<h1 style="font-size: clamp(22px, 2.4vw, 30px); font-weight: 700; line-height: 1.15; margin: 2px 0 0;">Procurement Package Overview</h1></div>' +
+    '<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">' +
+    '<select id="package-select" style="max-width: 260px; height: 34px; padding: 0 8px; font-size: 13px; letter-spacing: 0; text-transform: none; font-family: var(--font-body); border: 1px solid var(--color-divider); border-radius: 4px; background: #fff; color: var(--color-text);">' +
+    '<option value="all"' + (state.pkg === 'all' ? ' selected' : '') + '>All packages</option>' +
+    v.packageOptions.map(function (o) {
+      return '<option value="' + esc(o.value) + '"' + (state.pkg === o.value ? ' selected' : '') + '>' + esc(o.label) + '</option>';
+    }).join('') + '</select>' +
+    '<select id="project-select" style="height: 34px; padding: 0 8px; font-size: 13px; letter-spacing: 0; text-transform: none; font-family: var(--font-body); border: 1px solid var(--color-divider); border-radius: 4px; background: #fff; color: var(--color-text);">' +
+    '<option value="all"' + (state.project === 'all' ? ' selected' : '') + '>All projects</option>' +
+    v.projectOptions.map(function (name) {
+      return '<option value="' + esc(name) + '"' + (state.project === name ? ' selected' : '') + '>' + esc(name) + '</option>';
+    }).join('') + '</select>' +
+    '<select id="group-select" style="height: 34px; padding: 0 8px; font-size: 13px; letter-spacing: 0; text-transform: none; font-family: var(--font-body); border: 1px solid var(--color-divider); border-radius: 4px; background: #fff; color: var(--color-text);">' +
+    [['all', 'Active + closed'], ['topics', 'Active packages'], ['group_mm5zx8vr', 'Closed packages']].map(function (o) {
+      return '<option value="' + o[0] + '"' + (state.pkgGroup === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+    }).join('') + '</select>' +
+    '<label style="display: flex; align-items: center; gap: 7px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; font-family: var(--font-heading); color: var(--color-neutral-700);">Sort' +
+    '<select id="sort-select" style="height: 34px; padding: 0 8px; font-size: 13px; letter-spacing: 0; text-transform: none; font-family: var(--font-body); border: 1px solid var(--color-divider); border-radius: 4px; background: #fff; color: var(--color-text);">' +
+    ['severity:Worst status first', 'critical:Critical call-off date', 'site:Site install date', 'float:Least float first', 'name:Package name'].map(function (o) {
+      var parts = o.split(':'); return '<option value="' + parts[0] + '"' + (state.sort === parts[0] ? ' selected' : '') + '>' + parts[1] + '</option>';
+    }).join('') + '</select></label>' +
+    '<button data-action="toggle-all" style="height: 34px; padding: 0 14px; font-size: 13px; font-weight: 600; border: 1px solid var(--color-divider); border-radius: 4px; background: #fff; color: var(--color-accent); cursor: pointer;">' + v.toggleAllLabel + '</button>' +
+    '<button data-action="refresh" title="Refresh" style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--color-divider); border-radius: 6px; background: #fff; color: var(--color-neutral-700); cursor: pointer;">' +
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>' +
+    '</button>' +
+    '</div></div>';
+
+  html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px;">';
+  v.stats.forEach(function (s) {
+    html += '<button data-action="filter" data-key="' + s.key + '" style="' + s.style + '">' +
+      '<div style="font-size: 30px; font-weight: 700; line-height: 1;">' + s.count + '</div>' +
+      '<div style="font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 6px; line-height: 1.25;">' + s.label + '</div></button>';
+  });
+  html += '</div>';
+
+  html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px;">' +
+    '<div class="blueprint" style="padding: 14px 16px;">' + renderCorners() +
+    '<div style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-neutral-700); margin-bottom: 10px;">Timeline key</div>' +
+    '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 18px;">' +
+    v.legend.map(function (l) { return '<div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; line-height: 1.35; min-width: 0; white-space: nowrap;"><span style="width: 20px; height: 10px; border-radius: 2px; flex: none; background: ' + l.swatch + ';"></span><span>' + l.label + '</span></div>'; }).join('') +
+    '</div></div>' +
+    '<div class="blueprint" style="padding: 14px 16px;">' + renderCorners() +
+    '<div style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-neutral-700); margin-bottom: 10px;">Status codes</div>' +
+    '<div style="display: flex; flex-wrap: wrap; gap: 8px 10px;">' +
+    v.statusKey.map(function (k) { return '<span style="' + k.style + '">' + k.label + '</span>'; }).join('') +
+    '</div></div></div>';
+
+  html += '<div style="display: flex; flex-direction: column; gap: 16px;">';
+  v.groups.forEach(function (g) {
+    html += '<div><button data-action="toggle-group" data-key="' + g.key + '" style="' + g.headerStyle + '">' +
+      '<span style="font-size: 15px; font-weight: 700; min-width: 0;">' + g.label + '</span>' +
+      '<span style="flex: 1;"></span>' +
+      '<span style="font-size: 12.5px; opacity: 0.92; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + g.hint + '</span>' +
+      '<span style="font-size: 13px; font-weight: 600; white-space: nowrap; flex: none;">' + g.count + (g.count === 1 ? ' package' : ' packages') + '</span>' +
+      '<span style="font-size: 11px; flex: none;">' + (g.open ? '▾' : '▸') + '</span></button>';
+    if (g.open) {
+      html += '<div style="display: flex; flex-direction: column; gap: 12px; padding-top: 12px;">';
+      g.packages.forEach(function (p) { html += renderCard(p); });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+
+  if (v.noResults) {
+    html += '<div class="blueprint" style="padding: 28px; text-align: center;">' + renderCorners() +
+      '<div style="font-size: 18px; font-weight: 600;">No packages match this filter</div>' +
+      '<div style="font-size: 13px; color: var(--color-neutral-700); margin-top: 4px;">Clear the search box or the status filter above.</div></div>';
+  }
+
+  html += '<div style="font-size: 11.5px; color: var(--color-neutral-600); letter-spacing: 0.04em;">' + v.footNote + '</div>';
+
+  // preserve focus + caret across the re-render (otherwise the filter box
+  // loses focus after every keystroke and only accepts one character)
+  var activeId = document.activeElement && document.activeElement.id;
+  var caret = null;
+  if (activeId === 'query-input') {
+    try { caret = document.activeElement.selectionStart; } catch (e) { caret = null; }
+  }
+
+  root.innerHTML = html;
+
+  if (activeId) {
+    var again = document.getElementById(activeId);
+    if (again) {
+      again.focus();
+      if (caret != null && again.setSelectionRange) {
+        try { again.setSelectionRange(caret, caret); } catch (e) {}
+      }
+    }
+  }
+}
+
+// ---------- event delegation ----------
+document.addEventListener('click', function (e) {
+  var el = e.target.closest('[data-action]');
+  if (!el) return;
+  var action = el.dataset.action;
+  if (action === 'filter') {
+    var k = el.dataset.key;
+    setState(function (s) { return { filter: s.filter === k ? null : k }; });
+  } else if (action === 'toggle-group') {
+    var gk = el.dataset.key;
+    setState(function (s) { return { closed: Object.assign({}, s.closed, { [gk]: !s.closed[gk] }) }; });
+  } else if (action === 'toggle-all') {
+    setState(function (s) {
+      var anyClosed = ORDER.some(function (k) { return s.closed[k]; });
+      return { closed: anyClosed ? {} : ORDER.reduce(function (o, k) { o[k] = true; return o; }, {}) };
+    });
+  } else if (action === 'toggle-breakdown') {
+    var code = el.dataset.code;
+    setState(function (s) { return { open: Object.assign({}, s.open, { [code]: !s.open[code] }) }; });
+  } else if (action === 'toggle-ss') {
+    var sid = el.dataset.code;
+    setState(function (s) {
+      // Default is collapsed (anything other than explicit false counts as collapsed) -
+      // flip relative to that, not relative to a bare truthy/falsy check.
+      var currentlyCollapsed = s.ssCollapsed[sid] !== false;
+      return { ssCollapsed: Object.assign({}, s.ssCollapsed, { [sid]: !currentlyCollapsed }) };
+    });
+  } else if (action === 'toggle-calloffs') {
+    var ccode = el.dataset.code;
+    setState(function (s) { return { coOpen: Object.assign({}, s.coOpen, { [ccode]: !s.coOpen[ccode] }) }; });
+  } else if (action === 'retry') {
+    setState({ loading: true, error: null });
+    loadData();
+  } else if (action === 'refresh') {
+    var now = Date.now();
+    if (now - lastRefreshTime < MIN_REFRESH_INTERVAL_MS) return;
+    lastRefreshTime = now;
+    setState({ loading: true, error: null });
+    loadData();
+  }
+});
+
+document.addEventListener('change', function (e) {
+  if (e.target.id === 'sort-select') setState({ sort: e.target.value });
+  else if (e.target.id === 'package-select') setState({ pkg: e.target.value });
+  else if (e.target.id === 'project-select') setState({ project: e.target.value });
+  else if (e.target.id === 'group-select') setState({ pkgGroup: e.target.value });
+});
+
+// ---------- tooltip (delegated, no full re-render on mousemove) ----------
+var tipEl = document.getElementById('tooltip');
+document.addEventListener('mousemove', function (e) {
+  var el = e.target.closest('.tip-hover');
+  if (!el) { tipEl.style.display = 'none'; return; }
+  tipEl.querySelector('.tt-title').textContent = el.dataset.tipTitle || '';
+  tipEl.querySelector('.tt-body').textContent = el.dataset.tipBody || '';
+  var x = Math.min(e.clientX + 14, window.innerWidth - 300);
+  tipEl.style.left = x + 'px';
+  tipEl.style.top = (e.clientY + 16) + 'px';
+  tipEl.style.display = 'block';
+});
+document.addEventListener('mouseleave', function (e) {
+  if (e.target === document.documentElement) tipEl.style.display = 'none';
+}, true);
+
+// ---------- demo data (?demo) ----------
+// Preview-only: never touched when the app runs inside monday. Dates are relative to
+// today so the timeline, float and overdue counts always read as live.
+function demoData() {
+  var iso = function (off) { return toISODateLocal(new Date(TODAY.getTime() + off * 86400000)); };
+  var co = function (name, plannedOff, actualOff, called, recvd, status) {
+    return {
+      id: name, name: name,
+      plannedIssue: iso(plannedOff),
+      actualIssue: actualOff == null ? null : iso(actualOff),
+      qtyCalledOff: called, qtyReceived: recvd,
+      callOffStatus: status
+    };
+  };
+  var po = function (name, status) { return { id: name, name: name, status: status, placeholder: normTitle(status).indexOf('placeholder') > -1 }; };
+  var sup = function (name, status, sentOff, recvOff) {
+    return { name: name, status: status, rfqSent: sentOff == null ? null : iso(sentOff), quoteReceived: recvOff == null ? null : iso(recvOff) };
+  };
+  var mk = function (o) {
+    var l = (o.links || [])[0] || {};
+    return {
+      code: o.code, name: o.name, st: o.st,
+      status: l.status, statusKey: l.statusKey,
+      site: l.site, leadTime: l.leadTime, poPlaced: l.poPlaced, poRequired: l.poRequired,
+      orderRequired: l.orderRequired, orderPlaced: l.orderPlaced, confirmedDelivery: l.confirmedDelivery,
+      project: l.project, quantity: l.quantity,
+      callOffs: (l.callOffs || []).slice().sort(coSort), purchaseOrders: l.purchaseOrders || [],
+      plan: iso(o.plan), pco: iso(o.pco), cco: iso(o.cco),
+      act: o.act == null ? null : iso(o.act),
+      quoteReqd: iso(o.quoteReqd),
+      quoteAgg: aggregateQuotes(o.suppliers),
+      supplierRows: o.suppliers,
+      groupId: 'topics',
+      empty: o.empty || null
+    };
+  };
+
+  return [
+    mk({
+      code: 'PKG-014', name: 'Curtain walling — north elevation', st: 'past',
+      plan: -124, pco: -84, cco: -12, act: -121, quoteReqd: -96,
+      suppliers: [sup('Alu-Systems Ltd', 'Selected', -121, -99), sup('Facade Werks', 'Quoted', -119, -94), sup('Northline Glazing', 'Awaiting quote', -118, null)],
+      links: [{
+        id: 'p-014', procName: 'Curtain walling', site: iso(46), leadTime: 84,
+        poRequired: iso(-14), poPlaced: iso(-9), orderRequired: iso(-6), orderPlaced: null,
+        confirmedDelivery: iso(40), project: 'Riverside Block C', route: 'Framework',
+        status: 'Past Planned Date', statusKey: 'past', quantity: 500,
+        purchaseOrders: [po('PO-1184', 'Issued'), po('PO-1191', 'Requested')],
+        callOffs: [
+          co('CO-014-01 Ground floor', -34, -31, 180, 180, 'Approved by Commercial'),
+          co('CO-014-02 Levels 1–3', -12, -2, 160, 92, 'Approved by Commercial'),
+          co('CO-014-03 Levels 4–6', 20, null, 120, null, 'Submitted by Design')
+        ]
+      }]
+    }),
+    mk({
+      code: 'PKG-007', name: 'Cladding rails & brackets', st: 'mitigation',
+      plan: -160, pco: -120, cco: -40, act: -158, quoteReqd: -132,
+      suppliers: [sup('Steelfix Fabrication', 'Selected', -158, -140)],
+      links: [{
+        id: 'p-007', procName: 'Cladding rails', site: iso(18), leadTime: 62,
+        poRequired: iso(-44), poPlaced: iso(-8), orderRequired: iso(-40), orderPlaced: iso(-7),
+        confirmedDelivery: iso(26), project: 'Riverside Block C', route: 'Framework',
+        status: 'Mitigation Required', statusKey: 'mitigation', quantity: 240,
+        purchaseOrders: [po('PO-0972', 'Issued')],
+        callOffs: [
+          co('CO-007-01 Bracket set A', -26, -24, 240, 205, null)
+        ]
+      }]
+    }),
+    mk({
+      code: 'PKG-021', name: 'Structural steel frame', st: 'ontrack',
+      plan: -70, pco: -40, cco: 24, act: -68, quoteReqd: -48,
+      suppliers: [sup('Meridian Steel', 'Selected', -68, -52), sup('Cortex Structures', 'Quoted', -66, -50)],
+      links: [{
+        id: 'p-021', procName: 'Structural steel', site: iso(112), leadTime: 76,
+        poRequired: iso(22), poPlaced: null, orderRequired: iso(30), orderPlaced: null,
+        confirmedDelivery: null, project: 'Harbour Yard', route: 'Direct', status: 'On Track', statusKey: 'ontrack',
+        quantity: 120, callOffs: [], purchaseOrders: [po('PO placeholder 21', 'Placeholder')]
+      }]
+    }),
+    mk({
+      code: 'PKG-045', name: 'Mechanical plant — AHUs', st: 'ontrack',
+      plan: -55, pco: -30, cco: 34, act: -53, quoteReqd: -36,
+      suppliers: [sup('Airflow Systems', 'Selected', -53, -38)],
+      links: [{
+        id: 'p-045', procName: 'Mechanical plant', site: iso(96), leadTime: 58,
+        poRequired: iso(30), poPlaced: null, orderRequired: iso(38), orderPlaced: null,
+        confirmedDelivery: null, project: 'Harbour Yard', route: 'Framework',
+        status: 'On Track', statusKey: 'ontrack', quantity: 60,
+        callOffs: [], purchaseOrders: []
+      }]
+    }),
+    mk({
+      code: 'PKG-033', name: 'Lift installation', st: 'none',
+      plan: -30, pco: 0, cco: 40, act: null, quoteReqd: -10,
+      suppliers: [sup('Vertica Lifts', 'Awaiting quote', null, null)],
+      links: [],
+      empty: 'No linked Procurement package on this Supplier Selection item — site install, lead time and ordering dates cannot be resolved yet.'
+    })
+  ];
+}
+
+if (/(^|[?&])demo(=|&|$)/.test(location.search)) {
+  DEMO = true;
+  DATA = demoData();
+  setState({ loading: false, error: null });
+} else {
+  render();
+  loadData();
+}
+</script>
+</body>
+</html>
