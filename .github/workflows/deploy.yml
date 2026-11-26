@@ -1,0 +1,24 @@
+name: Procurement Overview CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: procurement-overview-production
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    uses: Holden-Installations/shared-workflows/.github/workflows/monday-deploy.yml@main
+    with:
+      app_id: '11970643'
+      app_name: 'Procurement Overview'
+    secrets:
+      MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
